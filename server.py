@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.agents.crew_orchestrator import RecruitAICrew
+from core.agents.langgraph_pipeline import LANGGRAPH_AVAILABLE, run_langgraph_pipeline
 
 load_dotenv()
 
@@ -31,6 +32,14 @@ class AnalyzeRequest(BaseModel):
     """Request for multi-agent analysis"""
     domains: list[str] = Field(default_factory=list)
     per_group: int | None = Field(default=3, ge=1, le=100)
+
+
+class AnalyzePipelineRequest(BaseModel):
+    """Request for grep-style pipeline analysis."""
+
+    domains: list[str] = Field(default_factory=list)
+    per_group: int | None = Field(default=3, ge=1, le=100)
+    cv_folder: str = Field(default="cvs")
 
 
 # FastAPI Setup
@@ -64,7 +73,76 @@ def index() -> FileResponse:
 @app.get("/api/health")
 def health() -> dict:
     """Health check endpoint"""
-    return {"status": "ok", "system": "RecruitAI Multi-Agent"}
+    return {
+        "status": "ok",
+        "system": "RecruitAI Multi-Agent",
+        "langgraph_available": LANGGRAPH_AVAILABLE,
+    }
+
+
+@app.post("/api/analyze-pipeline")
+def analyze_pipeline(request: AnalyzePipelineRequest) -> dict:
+    """Run the grep-style pipeline with LangGraph orchestration."""
+    selected_domains = [d.strip() for d in request.domains if isinstance(d, str) and d.strip()]
+    if not selected_domains:
+        raise HTTPException(status_code=400, detail="At least one domain is required")
+
+    per_group = request.per_group or 3
+
+    result = run_langgraph_pipeline(
+        domains=selected_domains,
+        per_group=per_group,
+        cv_folder=request.cv_folder,
+    )
+
+    if result.get("status") == "error":
+        return result
+
+    return {
+        "status": "success",
+        "message": "Grep-style pipeline completed",
+        "engine": "langgraph" if result.get("langgraph_enabled") else "sequential_fallback",
+        "domains": selected_domains,
+        "per_group": per_group,
+        "result": result,
+    }
+
+
+@app.post("/api/analyze-pipeline-debug")
+def analyze_pipeline_debug(request: AnalyzePipelineRequest) -> dict:
+    """Run LangGraph pipeline and return an execution trace of visited stages."""
+    selected_domains = [d.strip() for d in request.domains if isinstance(d, str) and d.strip()]
+    if not selected_domains:
+        raise HTTPException(status_code=400, detail="At least one domain is required")
+
+    per_group = request.per_group or 3
+
+    result = run_langgraph_pipeline(
+        domains=selected_domains,
+        per_group=per_group,
+        cv_folder=request.cv_folder,
+    )
+
+    if result.get("status") == "error":
+        return result
+
+    stages = result.get("metadata", {}).get("stages", [])
+    stage_path = [stage.get("name") for stage in stages if isinstance(stage, dict)]
+
+    return {
+        "status": "success",
+        "message": "LangGraph pipeline debug trace generated",
+        "engine": "langgraph" if result.get("langgraph_enabled") else "sequential_fallback",
+        "domains": selected_domains,
+        "per_group": per_group,
+        "trace": {
+            "stage_path": stage_path,
+            "stages": stages,
+            "total_stages": len(stage_path),
+            "used_regroup": "regroup_teams" in stage_path,
+        },
+        "result": result,
+    }
 
 
 @app.post("/api/analyze-crew")
